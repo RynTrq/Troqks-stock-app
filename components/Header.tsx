@@ -9,7 +9,7 @@ const Header = () => {
         <header className= "sticky top-0 header">
             <div className= "container header-wrapper">
                 <Link href = "/">
-                    <Image src= "/assets/icons/logo.svg" alt = "Troqks Logo" width={140} height={32} className = "h-8 w-auto cursor-pointer"></Image>
+                    <Image src= "/assets/icons/ExtendedLogo.png" alt = "Troqks Logo" width={140} height={32} className = "px-4 scale-210 h-8 w-auto cursor-pointer cursor-pointer transition-transform duration-300 hover:scale-150"></Image>
                 </Link>
                 <nav className= "hidden sm:block">
                     <NavItems />
