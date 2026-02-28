@@ -22,7 +22,7 @@ const Home = () => {
                       className="custom-chart"
                   />
               </div>
-              <div className="md-col-span xl:col-span-2">
+              <div className="md:col-span xl:col-span-2">
                   <TradingViewWidget
                       title="Stock Heatmap"
                       scriptUrl={`${scriptURL}stock-heatmap.js`}
@@ -52,7 +52,7 @@ const Home = () => {
                       className="custom-chart"
                   />
               </div>
-              <div className="md-col-span xl:col-span-2">
+              <div className="md:col-span xl:col-span-2">
                   <TradingViewWidget
                       scriptUrl={`${scriptURL}market-quotes.js`}
                       config={MARKET_DATA_WIDGET_CONFIG}
