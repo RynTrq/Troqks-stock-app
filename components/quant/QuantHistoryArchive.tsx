@@ -1,8 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { BrainCircuit, BookOpenText, ChevronRight, Gauge, Play, Search, Sparkles, TrendingUp } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { BrainCircuit, BookOpenText, Gauge, Play, Search, Sparkles, TrendingUp } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -131,15 +131,9 @@ const QuantHistoryArchive = () => {
   const [history, setHistory] = useState<QuantHistoryPayload | null>(null);
   const [strategiesPayload, setStrategiesPayload] = useState<StrategiesPayload | null>(null);
   const [query, setQuery] = useState("");
+  const [activeSection, setActiveSection] = useState<ArchiveSectionId>("prebuilt");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [requestedSection, setRequestedSection] = useState<ArchiveSectionId | null>(null);
-  const sectionRefs = useRef<Record<ArchiveSectionId, HTMLElement | null>>({
-    prebuilt: null,
-    backtests: null,
-    "paper-sessions": null,
-    "my-strategies": null,
-  });
 
   useEffect(() => {
     const load = async () => {
@@ -170,35 +164,21 @@ const QuantHistoryArchive = () => {
   }, []);
 
   useEffect(() => {
-    setRequestedSection(getRequestedSection());
-
-    const handleLocationChange = () => {
-      setRequestedSection(getRequestedSection());
+    const applyRequestedSection = () => {
+      const nextSection = getRequestedSection();
+      if (nextSection) setActiveSection(nextSection);
     };
 
-    window.addEventListener("hashchange", handleLocationChange);
-    window.addEventListener("popstate", handleLocationChange);
+    applyRequestedSection();
+
+    window.addEventListener("hashchange", applyRequestedSection);
+    window.addEventListener("popstate", applyRequestedSection);
 
     return () => {
-      window.removeEventListener("hashchange", handleLocationChange);
-      window.removeEventListener("popstate", handleLocationChange);
+      window.removeEventListener("hashchange", applyRequestedSection);
+      window.removeEventListener("popstate", applyRequestedSection);
     };
   }, []);
-
-  useEffect(() => {
-    if (loading) return;
-
-    if (!requestedSection) return;
-
-    const target = sectionRefs.current[requestedSection];
-    if (!target) return;
-
-    const frame = window.requestAnimationFrame(() => {
-      target.scrollIntoView({ behavior: "smooth", block: "start" });
-    });
-
-    return () => window.cancelAnimationFrame(frame);
-  }, [loading, requestedSection]);
 
   const normalizedQuery = query.trim().toLowerCase();
 
@@ -252,8 +232,13 @@ const QuantHistoryArchive = () => {
     );
   }, [customStrategies, normalizedQuery]);
 
+  const hasBacktests = (history?.counts.backtests ?? 0) > 0;
+  const hasPaperSessions = (history?.counts.paperSessions ?? 0) > 0;
+  const hasCustomStrategies = (history?.counts.customStrategies ?? 0) > 0;
+  const hasUserActivity = hasBacktests || hasPaperSessions || hasCustomStrategies;
+
   const averageBacktestReturn = useMemo(() => {
-    if (!history?.backtests.length) return 0;
+    if (!history?.backtests.length) return null;
     return history.backtests.reduce((sum, item) => sum + item.metrics.returnPct, 0) / history.backtests.length;
   }, [history]);
 
@@ -272,18 +257,17 @@ const QuantHistoryArchive = () => {
     [history],
   );
 
-  const sectionMix = useMemo(
+  const userActivityMix = useMemo(
     () =>
       [
-        { label: "Prebuilt", value: prebuiltStrategies.length, color: "#FDD458" },
         { label: "Backtests", value: history?.counts.backtests ?? 0, color: "#0FEDBE" },
         { label: "Paper", value: history?.counts.paperSessions ?? 0, color: "#FF8243" },
         { label: "Custom", value: history?.counts.customStrategies ?? 0, color: "#5862FF" },
       ].filter((item) => item.value > 0),
-    [history, prebuiltStrategies],
+    [history],
   );
 
-  const totalMix = useMemo(() => sectionMix.reduce((sum, item) => sum + item.value, 0), [sectionMix]);
+  const totalUserActivity = useMemo(() => userActivityMix.reduce((sum, item) => sum + item.value, 0), [userActivityMix]);
 
   const strategyCategoryMix = useMemo(() => {
     const bucket = new Map<string, number>();
@@ -370,6 +354,21 @@ const QuantHistoryArchive = () => {
       icon: BrainCircuit,
     },
   ];
+
+  const activeSectionMeta = archiveSections.find((section) => section.id === activeSection) ?? archiveSections[0];
+  const activeSectionCount =
+    activeSection === "prebuilt"
+      ? filteredPrebuilt.length
+      : activeSection === "backtests"
+        ? filteredBacktests.length
+        : activeSection === "paper-sessions"
+          ? filteredPaperSessions.length
+          : filteredCustomStrategies.length;
+
+  const openSection = (sectionId: ArchiveSectionId) => {
+    setActiveSection(sectionId);
+    window.history.replaceState(null, "", `/quant-history?section=${sectionId}#${sectionId}`);
+  };
 
   const renderBacktestCard = (item: QuantHistoryBacktestRecord) => (
     <article key={item._id} className="rounded-md border border-gray-700 bg-gray-800/70 p-5">
@@ -548,54 +547,54 @@ const QuantHistoryArchive = () => {
       </section>
 
       <section className="grid gap-6 xl:grid-cols-[1.15fr_0.85fr]">
-        <div className="rounded-md border border-gray-700 bg-[linear-gradient(135deg,rgba(15,237,190,0.14),rgba(20,20,20,0.96)_42%,rgba(88,98,255,0.18))] p-6">
-          <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
-            <div className="max-w-xl">
-              <p className="text-sm font-semibold uppercase tracking-wide text-teal-300">Archive Pulse</p>
-              <h2 className="mt-2 text-3xl font-semibold text-gray-100">A calmer read on what your lab has been doing lately</h2>
-              <p className="mt-3 text-sm leading-7 text-gray-300">
-                You can skim the shape of performance here before dropping into the detailed logs below.
-              </p>
-            </div>
-            <div className="grid min-w-0 gap-3 sm:grid-cols-3">
-              <div className="rounded-md border border-white/10 bg-black/20 p-4 backdrop-blur-sm">
-                <p className="text-xs uppercase tracking-wide text-gray-400">Average Backtest Return</p>
-                <p className={`mt-3 text-2xl font-semibold ${averageBacktestReturn >= 0 ? "text-teal-300" : "text-red-300"}`}>
-                  {compactPct(averageBacktestReturn)}
+        {hasUserActivity ? (
+          <div className="rounded-md border border-gray-700 bg-[linear-gradient(135deg,rgba(15,237,190,0.14),rgba(20,20,20,0.96)_42%,rgba(253,212,88,0.10))] p-6">
+            <div className="flex flex-col gap-6 lg:flex-row lg:items-start lg:justify-between">
+              <div className="max-w-xl">
+                <p className="text-sm font-semibold uppercase tracking-wide text-teal-300">Research Ledger</p>
+                <h2 className="mt-2 text-3xl font-semibold text-gray-100">Your saved activity, based only on real runs</h2>
+                <p className="mt-3 text-sm leading-7 text-gray-300">
+                  These totals come from backtests, paper sessions, and AI strategies that are actually stored for your account.
                 </p>
               </div>
-              <div className="rounded-md border border-white/10 bg-black/20 p-4 backdrop-blur-sm">
-                <p className="text-xs uppercase tracking-wide text-gray-400">Best Logged Run</p>
-                <p className="mt-3 text-2xl font-semibold text-gray-100">
-                  {bestBacktest ? compactPct(bestBacktest.metrics.returnPct) : "--"}
-                </p>
-                <p className="mt-1 text-xs text-gray-400">{bestBacktest ? `${bestBacktest.symbol} · ${bestBacktest.strategyName}` : "No runs yet"}</p>
-              </div>
-              <div className="rounded-md border border-white/10 bg-black/20 p-4 backdrop-blur-sm">
-                <p className="text-xs uppercase tracking-wide text-gray-400">Latest Paper Equity</p>
-                <p className="mt-3 text-2xl font-semibold text-gray-100">{latestPaperEquity ? currency(latestPaperEquity) : "--"}</p>
+              <div className="grid min-w-0 gap-3 sm:grid-cols-3">
+                {averageBacktestReturn !== null && (
+                  <div className="rounded-md border border-white/10 bg-black/20 p-4 backdrop-blur-sm">
+                    <p className="text-xs uppercase tracking-wide text-gray-400">Average Backtest Return</p>
+                    <p className={`mt-3 text-2xl font-semibold ${averageBacktestReturn >= 0 ? "text-teal-300" : "text-red-300"}`}>
+                      {compactPct(averageBacktestReturn)}
+                    </p>
+                  </div>
+                )}
+                {bestBacktest && (
+                  <div className="rounded-md border border-white/10 bg-black/20 p-4 backdrop-blur-sm">
+                    <p className="text-xs uppercase tracking-wide text-gray-400">Best Logged Run</p>
+                    <p className="mt-3 text-2xl font-semibold text-gray-100">{compactPct(bestBacktest.metrics.returnPct)}</p>
+                    <p className="mt-1 text-xs text-gray-400">
+                      {bestBacktest.symbol} · {bestBacktest.strategyName}
+                    </p>
+                  </div>
+                )}
+                {latestPaperEquity !== null && (
+                  <div className="rounded-md border border-white/10 bg-black/20 p-4 backdrop-blur-sm">
+                    <p className="text-xs uppercase tracking-wide text-gray-400">Latest Paper Equity</p>
+                    <p className="mt-3 text-2xl font-semibold text-gray-100">{currency(latestPaperEquity)}</p>
+                  </div>
+                )}
               </div>
             </div>
-          </div>
 
-          <div className="mt-6 grid gap-4 lg:grid-cols-[1.2fr_0.8fr]">
-            <div className="rounded-md border border-white/10 bg-black/20 p-4 backdrop-blur-sm">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm font-semibold text-gray-100">Recent Backtest Trend</p>
-                  <p className="text-sm text-gray-400">Last eight returns, read left to right.</p>
-                </div>
-                <TrendingUp className="h-4 w-4 text-teal-300" />
-              </div>
-              <div className="mt-4">
-                {backtestTrendValues.length > 0 ? (
-                  <svg viewBox="0 0 420 160" className="h-40 w-full">
-                    <defs>
-                      <linearGradient id="archiveTrendFill" x1="0" x2="0" y1="0" y2="1">
-                        <stop offset="0%" stopColor="#0FEDBE" stopOpacity="0.3" />
-                        <stop offset="100%" stopColor="#0FEDBE" stopOpacity="0.04" />
-                      </linearGradient>
-                    </defs>
+            <div className="mt-6 grid gap-4 lg:grid-cols-[1.2fr_0.8fr]">
+              {hasBacktests && (
+                <div className="rounded-md border border-white/10 bg-black/20 p-4 backdrop-blur-sm">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-sm font-semibold text-gray-100">Recent Backtest Trend</p>
+                      <p className="text-sm text-gray-400">Last logged returns, read left to right.</p>
+                    </div>
+                    <TrendingUp className="h-4 w-4 text-teal-300" />
+                  </div>
+                  <svg viewBox="0 0 420 160" className="mt-4 h-40 w-full">
                     <rect x="0" y="0" width="420" height="160" rx="8" fill="#101215" />
                     <path d={buildSparkPath(backtestTrendValues)} fill="none" stroke="#0FEDBE" strokeWidth="3" strokeLinecap="round" />
                     {backtestTrendValues.map((value, index) => {
@@ -608,66 +607,83 @@ const QuantHistoryArchive = () => {
                       return <circle key={`${index}-${value}`} cx={x} cy={y} r="4" fill={value >= 0 ? "#0FEDBE" : "#FF495B"} />;
                     })}
                   </svg>
-                ) : (
-                  <div className="flex h-40 items-center justify-center rounded-md bg-[#101215] text-sm text-gray-500">
-                    Backtest trend will appear as soon as runs are logged.
+                </div>
+              )}
+
+              <div className="grid gap-4">
+                <div className="rounded-md border border-white/10 bg-black/20 p-4 backdrop-blur-sm">
+                  <p className="text-sm font-semibold text-gray-100">User Activity Mix</p>
+                  <div className="mt-4 h-3 overflow-hidden rounded-full bg-gray-900">
+                    <div className="flex h-full w-full">
+                      {userActivityMix.map((item) => (
+                        <div
+                          key={item.label}
+                          className="h-full"
+                          style={{
+                            width: `${totalUserActivity > 0 ? (item.value / totalUserActivity) * 100 : 0}%`,
+                            backgroundColor: item.color,
+                          }}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                  <div className="mt-4 grid gap-2">
+                    {userActivityMix.map((item) => (
+                      <div key={item.label} className="flex items-center justify-between text-sm">
+                        <div className="flex items-center gap-2 text-gray-300">
+                          <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: item.color }} />
+                          {item.label}
+                        </div>
+                        <span className="font-medium text-gray-100">{item.value}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {hasPaperSessions && (
+                  <div className="rounded-md border border-white/10 bg-black/20 p-4 backdrop-blur-sm">
+                    <p className="text-sm font-semibold text-gray-100">Paper Session Status</p>
+                    <div className="mt-4 space-y-3">
+                      {statusMix
+                        .filter((item) => item.value > 0)
+                        .map((item) => {
+                          const total = history?.counts.paperSessions ?? 1;
+                          return (
+                            <div key={item.label}>
+                              <div className="mb-1 flex items-center justify-between text-sm">
+                                <span className="text-gray-300">{item.label}</span>
+                                <span className="text-gray-100">{item.value}</span>
+                              </div>
+                              <div className="h-2 overflow-hidden rounded-full bg-gray-900">
+                                <div className={`${item.color} h-full rounded-full`} style={{ width: `${(item.value / total) * 100}%` }} />
+                              </div>
+                            </div>
+                          );
+                        })}
+                    </div>
                   </div>
                 )}
               </div>
             </div>
-
-            <div className="grid gap-4">
-              <div className="rounded-md border border-white/10 bg-black/20 p-4 backdrop-blur-sm">
-                <p className="text-sm font-semibold text-gray-100">Workspace Mix</p>
-                <div className="mt-4 h-3 overflow-hidden rounded-full bg-gray-900">
-                  <div className="flex h-full w-full">
-                    {sectionMix.map((item) => (
-                      <div
-                        key={item.label}
-                        className="h-full"
-                        style={{
-                          width: `${totalMix > 0 ? (item.value / totalMix) * 100 : 0}%`,
-                          backgroundColor: item.color,
-                        }}
-                      />
-                    ))}
-                  </div>
-                </div>
-                <div className="mt-4 grid gap-2">
-                  {sectionMix.map((item) => (
-                    <div key={item.label} className="flex items-center justify-between text-sm">
-                      <div className="flex items-center gap-2 text-gray-300">
-                        <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: item.color }} />
-                        {item.label}
-                      </div>
-                      <span className="font-medium text-gray-100">{item.value}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              <div className="rounded-md border border-white/10 bg-black/20 p-4 backdrop-blur-sm">
-                <p className="text-sm font-semibold text-gray-100">Paper Session Status</p>
-                <div className="mt-4 space-y-3">
-                  {statusMix.map((item) => {
-                    const total = Math.max(history?.counts.paperSessions ?? 0, 1);
-                    return (
-                      <div key={item.label}>
-                        <div className="mb-1 flex items-center justify-between text-sm">
-                          <span className="text-gray-300">{item.label}</span>
-                          <span className="text-gray-100">{item.value}</span>
-                        </div>
-                        <div className="h-2 overflow-hidden rounded-full bg-gray-900">
-                          <div className={`${item.color} h-full rounded-full`} style={{ width: `${(item.value / total) * 100}%` }} />
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
+          </div>
+        ) : (
+          <div className="rounded-md border border-dashed border-gray-700 bg-gray-800/50 p-8">
+            <p className="text-sm font-semibold uppercase tracking-wide text-teal-400">Research Ledger</p>
+            <h2 className="mt-3 text-3xl font-semibold text-gray-100">Your log is empty</h2>
+            <p className="mt-3 max-w-2xl text-sm leading-7 text-gray-400">
+              No backtests, paper sessions, or AI-built strategies have been saved yet. The app will not show fabricated charts,
+              fake returns, or placeholder performance numbers.
+            </p>
+            <div className="mt-6 flex flex-wrap gap-3">
+              <Button asChild className="yellow-btn">
+                <Link href="/quant">Run Your First Backtest</Link>
+              </Button>
+              <Button asChild variant="outline" className="border-gray-600 bg-transparent text-gray-100">
+                <Link href="/quant-history?section=prebuilt#prebuilt">Browse Strategy Library</Link>
+              </Button>
             </div>
           </div>
-        </div>
+        )}
 
         <div className="grid gap-4">
           <div className="rounded-md border border-gray-700 bg-gray-800/70 p-5">
@@ -710,177 +726,204 @@ const QuantHistoryArchive = () => {
                   </div>
                 ))
               ) : (
-                <p className="text-sm text-gray-500">Recent activity will land here once the archive has a little more motion.</p>
+                <div className="rounded-md border border-dashed border-gray-700 bg-gray-900/50 p-4 text-sm text-gray-500">
+                  Activity log is empty. Saved backtests, paper sessions, and AI strategies will appear here after you create them.
+                </div>
               )}
             </div>
           </div>
         </div>
       </section>
 
-      <section className="rounded-md border border-gray-700 bg-gray-800/70 p-5">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-          <div>
-            <p className="text-sm font-semibold uppercase tracking-wide text-yellow-400">Archive Navigation</p>
-            <h2 className="mt-2 text-2xl font-semibold text-gray-100">Move through the ledger by section or search term</h2>
+      <section className="rounded-md border border-gray-700 bg-gray-800/70">
+        <div className="border-b border-gray-700 p-5">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+            <div>
+              <p className="text-sm font-semibold uppercase tracking-wide text-yellow-400">Archive Workspace</p>
+              <h2 className="mt-2 text-2xl font-semibold text-gray-100">Open one clean section at a time</h2>
+              <p className="mt-2 max-w-3xl text-sm leading-6 text-gray-500">
+                Sections behave like focused pages. Large record sets scroll inside the active panel, so the main page stays composed.
+              </p>
+            </div>
+            <label className="relative block w-full max-w-md">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-500" />
+              <Input
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="Search symbol, strategy, prompt, or status"
+                className="form-input pl-10"
+              />
+            </label>
           </div>
-          <label className="relative block w-full max-w-md">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-500" />
-            <Input
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="Search symbol, strategy, prompt, or status"
-              className="form-input pl-10"
-            />
-          </label>
+
+          <div className="mt-5 grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+            {archiveSections.map((section) => {
+              const isActive = activeSection === section.id;
+              const count =
+                section.id === "prebuilt"
+                  ? filteredPrebuilt.length
+                  : section.id === "backtests"
+                    ? filteredBacktests.length
+                    : section.id === "paper-sessions"
+                      ? filteredPaperSessions.length
+                      : filteredCustomStrategies.length;
+
+              return (
+                <button
+                  key={section.id}
+                  type="button"
+                  onClick={() => openSection(section.id)}
+                  className={`rounded-md border p-4 text-left transition-colors ${
+                    isActive
+                      ? "border-teal-400 bg-teal-400/10 text-gray-100"
+                      : "border-gray-700 bg-gray-900/70 text-gray-400 hover:border-teal-400/40 hover:bg-gray-900 hover:text-gray-100"
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+                    <section.icon className={isActive ? "h-4 w-4 text-teal-300" : "h-4 w-4 text-teal-400"} />
+                    <span className="rounded-md border border-gray-700 bg-gray-950/60 px-2 py-1 text-xs text-gray-300">{count}</span>
+                  </div>
+                  <p className="mt-4 font-semibold text-gray-100">{section.label}</p>
+                  <p className="mt-2 text-sm leading-6 text-gray-500">{section.description}</p>
+                </button>
+              );
+            })}
+          </div>
         </div>
 
-        <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-          {archiveSections.map((section) => (
-            <a
-              key={section.id}
-              href={`#${section.id}`}
-            className="rounded-md border border-gray-700 bg-gray-900/70 p-4 transition-colors hover:border-teal-400/40 hover:bg-gray-900 hover:text-gray-100"
-            >
-              <div className="flex items-center justify-between">
-                <section.icon className="h-4 w-4 text-teal-400" />
-                <ChevronRight className="h-4 w-4 text-gray-500" />
+        {loading ? (
+          <div className="p-6">
+            <div className="rounded-md border border-dashed border-gray-700 p-10 text-center text-gray-500">
+              Loading the Quant History archive...
+            </div>
+          </div>
+        ) : error ? (
+          <div className="p-6">
+            <div className="rounded-md border border-red-500/30 bg-red-500/10 p-6 text-sm text-red-200">{error}</div>
+          </div>
+        ) : (
+          <div id={activeSection} className="grid min-h-[620px] gap-0 xl:grid-cols-[280px_1fr]">
+            <aside className="border-b border-gray-700 bg-gray-900/40 p-5 xl:border-b-0 xl:border-r">
+              <p className="text-xs font-semibold uppercase tracking-wide text-teal-400">Current Section</p>
+              <h3 className="mt-3 text-2xl font-semibold text-gray-100">{activeSectionMeta.label}</h3>
+              <p className="mt-3 text-sm leading-6 text-gray-500">{activeSectionMeta.description}</p>
+              <div className="mt-6 rounded-md border border-gray-700 bg-gray-950/50 p-4">
+                <p className="text-xs uppercase tracking-wide text-gray-500">Matched Records</p>
+                <p className="mt-2 text-3xl font-semibold text-gray-100">{activeSectionCount}</p>
               </div>
-              <p className="mt-4 font-semibold text-gray-100">{section.label}</p>
-              <p className="mt-2 text-sm leading-6 text-gray-500">{section.description}</p>
-            </a>
-          ))}
-        </div>
+              <Button asChild variant="outline" className="mt-4 w-full border-gray-600 bg-transparent text-gray-100">
+                <Link href="/quant">Back To Quant Lab</Link>
+              </Button>
+            </aside>
+
+            <div className="max-h-[760px] overflow-y-auto p-5 lg:p-6">
+              {activeSection === "prebuilt" && (
+                <section className="space-y-5">
+                  <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
+                    <div>
+                      <p className="text-sm font-semibold uppercase tracking-wide text-yellow-400">Prebuilt Strategies</p>
+                      <h2 className="text-2xl font-semibold text-gray-100">Full Quant Lab strategy catalog</h2>
+                    </div>
+                    <p className="text-sm text-gray-500">{filteredPrebuilt.length} strategies matched</p>
+                  </div>
+
+                  {filteredPrebuilt.length > 0 ? (
+                    <div className="grid gap-4 md:grid-cols-2 2xl:grid-cols-3">
+                      {filteredPrebuilt.map((strategy) => (
+                        <article key={strategy.id} className="rounded-md border border-gray-700 bg-[linear-gradient(180deg,rgba(20,20,20,0.94),rgba(20,20,20,0.82))] p-5">
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <p className="text-xs font-semibold uppercase tracking-wide text-yellow-400">{strategy.category}</p>
+                              <h3 className="mt-2 text-lg font-semibold text-gray-100">{strategy.displayName ?? strategy.name}</h3>
+                            </div>
+                            <Sparkles className="h-4 w-4 text-teal-400" />
+                          </div>
+                          <p className="mt-4 text-sm leading-6 text-gray-400">{strategy.description}</p>
+                          <div className="mt-4 flex flex-wrap gap-2 text-xs text-gray-400">
+                            <span className="rounded-md border border-gray-700 bg-gray-900/60 px-2 py-1">{strategy.id}</span>
+                            <span className="rounded-md border border-gray-700 bg-gray-900/60 px-2 py-1">
+                              {strategy.parameters.length} params
+                            </span>
+                            {strategy.benchmarkSymbol && (
+                              <span className="rounded-md border border-gray-700 bg-gray-900/60 px-2 py-1">
+                                Benchmark {strategy.benchmarkSymbol}
+                              </span>
+                            )}
+                          </div>
+                        </article>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="rounded-md border border-dashed border-gray-700 p-8 text-center text-sm text-gray-500">
+                      No prebuilt strategies matched that search.
+                    </div>
+                  )}
+                </section>
+              )}
+
+              {activeSection === "backtests" && (
+                <section className="space-y-5">
+                  <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
+                    <div>
+                      <p className="text-sm font-semibold uppercase tracking-wide text-yellow-400">Backtests Logged</p>
+                      <h2 className="text-2xl font-semibold text-gray-100">Historical simulation archive</h2>
+                    </div>
+                    <p className="text-sm text-gray-500">{filteredBacktests.length} runs matched</p>
+                  </div>
+
+                  {filteredBacktests.length > 0 ? (
+                    <div className="grid gap-4">{filteredBacktests.map(renderBacktestCard)}</div>
+                  ) : (
+                    <div className="rounded-md border border-dashed border-gray-700 p-8 text-center text-sm text-gray-500">
+                      Backtest log is empty. Run a backtest to create real performance records.
+                    </div>
+                  )}
+                </section>
+              )}
+
+              {activeSection === "paper-sessions" && (
+                <section className="space-y-5">
+                  <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
+                    <div>
+                      <p className="text-sm font-semibold uppercase tracking-wide text-teal-400">Paper Sessions</p>
+                      <h2 className="text-2xl font-semibold text-gray-100">Paper trading ledger</h2>
+                    </div>
+                    <p className="text-sm text-gray-500">{filteredPaperSessions.length} sessions matched</p>
+                  </div>
+
+                  {filteredPaperSessions.length > 0 ? (
+                    <div className="grid gap-4">{filteredPaperSessions.map(renderPaperSessionCard)}</div>
+                  ) : (
+                    <div className="rounded-md border border-dashed border-gray-700 p-8 text-center text-sm text-gray-500">
+                      Paper trading log is empty. Start a session to track a real simulation ledger.
+                    </div>
+                  )}
+                </section>
+              )}
+
+              {activeSection === "my-strategies" && (
+                <section className="space-y-5">
+                  <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
+                    <div>
+                      <p className="text-sm font-semibold uppercase tracking-wide text-teal-400">My Strategies</p>
+                      <h2 className="text-2xl font-semibold text-gray-100">Saved AI strategy history</h2>
+                    </div>
+                    <p className="text-sm text-gray-500">{filteredCustomStrategies.length} strategies matched</p>
+                  </div>
+
+                  {filteredCustomStrategies.length > 0 ? (
+                    <div className="grid gap-4 xl:grid-cols-2">{filteredCustomStrategies.map(renderCustomStrategyCard)}</div>
+                  ) : (
+                    <div className="rounded-md border border-dashed border-gray-700 p-8 text-center text-sm text-gray-500">
+                      Strategy log is empty. AI-built strategies will appear here only after you save them.
+                    </div>
+                  )}
+                </section>
+              )}
+            </div>
+          </div>
+        )}
       </section>
-
-      {loading ? (
-        <div className="rounded-md border border-dashed border-gray-700 p-10 text-center text-gray-500">
-          Loading the Quant History archive...
-        </div>
-      ) : error ? (
-        <div className="rounded-md border border-red-500/30 bg-red-500/10 p-6 text-sm text-red-200">{error}</div>
-      ) : (
-        <div className="space-y-8">
-          <section
-            id="prebuilt"
-            ref={(element) => {
-              sectionRefs.current.prebuilt = element;
-            }}
-            className="scroll-mt-24 space-y-5"
-          >
-            <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
-              <div>
-                <p className="text-sm font-semibold uppercase tracking-wide text-yellow-400">Prebuilt Strategies</p>
-                <h2 className="text-2xl font-semibold text-gray-100">Full Quant Lab strategy catalog</h2>
-              </div>
-              <p className="text-sm text-gray-500">{filteredPrebuilt.length} strategies matched</p>
-            </div>
-
-            {filteredPrebuilt.length > 0 ? (
-              <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-                {filteredPrebuilt.map((strategy) => (
-                  <article key={strategy.id} className="rounded-md border border-gray-700 bg-[linear-gradient(180deg,rgba(20,20,20,0.94),rgba(20,20,20,0.82))] p-5">
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <p className="text-xs font-semibold uppercase tracking-wide text-yellow-400">{strategy.category}</p>
-                        <h3 className="mt-2 text-lg font-semibold text-gray-100">{strategy.displayName ?? strategy.name}</h3>
-                      </div>
-                      <Sparkles className="h-4 w-4 text-teal-400" />
-                    </div>
-                    <p className="mt-4 text-sm leading-6 text-gray-400">{strategy.description}</p>
-                    <div className="mt-4 flex flex-wrap gap-2 text-xs text-gray-400">
-                      <span className="rounded-md border border-gray-700 bg-gray-900/60 px-2 py-1">{strategy.id}</span>
-                      <span className="rounded-md border border-gray-700 bg-gray-900/60 px-2 py-1">
-                        {strategy.parameters.length} params
-                      </span>
-                      {strategy.benchmarkSymbol && (
-                        <span className="rounded-md border border-gray-700 bg-gray-900/60 px-2 py-1">
-                          Benchmark {strategy.benchmarkSymbol}
-                        </span>
-                      )}
-                    </div>
-                  </article>
-                ))}
-              </div>
-            ) : (
-              <div className="rounded-md border border-dashed border-gray-700 p-8 text-center text-sm text-gray-500">
-                No prebuilt strategies matched that search.
-              </div>
-            )}
-          </section>
-
-          <section
-            id="backtests"
-            ref={(element) => {
-              sectionRefs.current.backtests = element;
-            }}
-            className="scroll-mt-24 space-y-5"
-          >
-            <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
-              <div>
-                <p className="text-sm font-semibold uppercase tracking-wide text-yellow-400">Backtests Logged</p>
-                <h2 className="text-2xl font-semibold text-gray-100">Historical simulation archive</h2>
-              </div>
-              <p className="text-sm text-gray-500">{filteredBacktests.length} runs matched</p>
-            </div>
-
-            {filteredBacktests.length > 0 ? (
-              <div className="grid gap-4">{filteredBacktests.map(renderBacktestCard)}</div>
-            ) : (
-              <div className="rounded-md border border-dashed border-gray-700 p-8 text-center text-sm text-gray-500">
-                No backtests matched that search yet.
-              </div>
-            )}
-          </section>
-
-          <section
-            id="paper-sessions"
-            ref={(element) => {
-              sectionRefs.current["paper-sessions"] = element;
-            }}
-            className="scroll-mt-24 space-y-5"
-          >
-            <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
-              <div>
-                <p className="text-sm font-semibold uppercase tracking-wide text-teal-400">Paper Sessions</p>
-                <h2 className="text-2xl font-semibold text-gray-100">Paper trading ledger</h2>
-              </div>
-              <p className="text-sm text-gray-500">{filteredPaperSessions.length} sessions matched</p>
-            </div>
-
-            {filteredPaperSessions.length > 0 ? (
-              <div className="grid gap-4">{filteredPaperSessions.map(renderPaperSessionCard)}</div>
-            ) : (
-              <div className="rounded-md border border-dashed border-gray-700 p-8 text-center text-sm text-gray-500">
-                No paper sessions matched that search yet.
-              </div>
-            )}
-          </section>
-
-          <section
-            id="my-strategies"
-            ref={(element) => {
-              sectionRefs.current["my-strategies"] = element;
-            }}
-            className="scroll-mt-24 space-y-5"
-          >
-            <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
-              <div>
-                <p className="text-sm font-semibold uppercase tracking-wide text-teal-400">My Strategies</p>
-                <h2 className="text-2xl font-semibold text-gray-100">Saved AI strategy history</h2>
-              </div>
-              <p className="text-sm text-gray-500">{filteredCustomStrategies.length} strategies matched</p>
-            </div>
-
-            {filteredCustomStrategies.length > 0 ? (
-              <div className="grid gap-4 xl:grid-cols-2">{filteredCustomStrategies.map(renderCustomStrategyCard)}</div>
-            ) : (
-              <div className="rounded-md border border-dashed border-gray-700 p-8 text-center text-sm text-gray-500">
-                No saved strategies matched that search yet.
-              </div>
-            )}
-          </section>
-        </div>
-      )}
     </div>
   );
 };

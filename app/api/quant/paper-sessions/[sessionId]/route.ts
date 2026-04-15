@@ -52,9 +52,18 @@ export const PATCH = async (request: Request, context: RouteContext) => {
 
   return NextResponse.json({
     sessionId: session._id.toString(),
+    symbol: session.symbol,
+    benchmarkSymbol: session.benchmarkSymbol,
+    strategyId: session.strategyId,
+    strategyName: session.strategyName,
     status: session.status,
     snapshot: session.snapshot,
     trades: session.tradeLog,
+    tradeCount: session.tradeLog?.length ?? 0,
     equityCurve: session.equityCurve,
+    initialCapital: session.initialCapital,
+    parameters: session.parameters,
+    createdAt: session.createdAt,
+    updatedAt: session.updatedAt,
   });
 };

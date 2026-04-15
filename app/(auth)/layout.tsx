@@ -16,17 +16,13 @@ const Layout = ({children} : {children : React.ReactNode}) => {
 
             <section className="auth-right-section">
                 <div className="z-10 relative lg:mt-4 lg:mb-16">
-                    <blockquote className="auth-blockquote">
-                        Troqks keeps the market in focus. I can scan movement, compare symbols, and make decisions with a calmer head.
-                    </blockquote>
-                    <div className="flex items-center justify-between">
-                        <cite className="auth-testimonial-author">- Ethan R.</cite>
-                        <p className="max-md:text-xs text-gray-500">Retail Investor</p>
+                    <div className="auth-blockquote">
+                        Research live symbols, build strategy experiments, and keep a clean ledger of only the work you actually run.
                     </div>
-                    <div className="flex items-center gap-0.5">
-                        {[1,2,3,4,5].map((star) => (
-                            <Image src="/assets/icons/star.svg" alt="Star" key={star} width={20} height={20} className="w-5 h-5"/>
-                        ))}
+                    <div className="flex flex-wrap gap-2 text-xs font-semibold uppercase tracking-wide text-gray-500">
+                        <span className="rounded-md border border-gray-700 px-3 py-2">Live market workspace</span>
+                        <span className="rounded-md border border-gray-700 px-3 py-2">User-owned research log</span>
+                        <span className="rounded-md border border-gray-700 px-3 py-2">No fabricated performance data</span>
                     </div>
                 </div>
 

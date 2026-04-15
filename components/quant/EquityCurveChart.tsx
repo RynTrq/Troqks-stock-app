@@ -27,8 +27,9 @@ const toPath = (points: EquityCurveChartProps["points"]) => {
 
 const EquityCurveChart = ({ points }: EquityCurveChartProps) => {
   const values = points.map((point) => point.equity);
-  const min = values.length > 0 ? Math.min(...values) : 0;
-  const max = values.length > 0 ? Math.max(...values) : 0;
+  const hasPoints = values.length > 0;
+  const min = hasPoints ? Math.min(...values) : null;
+  const max = hasPoints ? Math.max(...values) : null;
 
   return (
     <div className="rounded-md border border-gray-700 bg-gray-800/70 p-4">
@@ -38,24 +39,35 @@ const EquityCurveChart = ({ points }: EquityCurveChartProps) => {
           <p className="text-sm text-gray-500">Capital tracked over every evaluated bar.</p>
         </div>
         <div className="text-right text-sm text-gray-400">
-          <p>Min ${min.toFixed(0)}</p>
-          <p>Max ${max.toFixed(0)}</p>
+          {hasPoints ? (
+            <>
+              <p>Min ${min?.toFixed(0)}</p>
+              <p>Max ${max?.toFixed(0)}</p>
+            </>
+          ) : (
+            <p>No equity data</p>
+          )}
         </div>
       </div>
 
-      <svg viewBox={`0 0 ${WIDTH} ${HEIGHT}`} className="h-60 w-full overflow-visible">
-        <defs>
-          <linearGradient id="equityGradient" x1="0" x2="0" y1="0" y2="1">
-            <stop offset="0%" stopColor="#0FEDBE" stopOpacity="0.35" />
-            <stop offset="100%" stopColor="#0FEDBE" stopOpacity="0.02" />
-          </linearGradient>
-        </defs>
-        <rect x="0" y="0" width={WIDTH} height={HEIGHT} rx="8" fill="#141414" />
-        <path d={toPath(points)} fill="none" stroke="#0FEDBE" strokeWidth="3" strokeLinecap="round" />
-      </svg>
+      {hasPoints ? (
+        <svg viewBox={`0 0 ${WIDTH} ${HEIGHT}`} className="h-60 w-full overflow-visible">
+          <defs>
+            <linearGradient id="equityGradient" x1="0" x2="0" y1="0" y2="1">
+              <stop offset="0%" stopColor="#0FEDBE" stopOpacity="0.35" />
+              <stop offset="100%" stopColor="#0FEDBE" stopOpacity="0.02" />
+            </linearGradient>
+          </defs>
+          <rect x="0" y="0" width={WIDTH} height={HEIGHT} rx="8" fill="#141414" />
+          <path d={toPath(points)} fill="none" stroke="#0FEDBE" strokeWidth="3" strokeLinecap="round" />
+        </svg>
+      ) : (
+        <div className="flex h-60 items-center justify-center rounded-md border border-dashed border-gray-700 bg-gray-900/50 text-center text-sm text-gray-500">
+          Equity curve is empty. Run a backtest or start a paper session to generate real data.
+        </div>
+      )}
     </div>
   );
 };
 
 export default EquityCurveChart;
-

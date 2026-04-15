@@ -6,6 +6,7 @@ import { getRequestBody, jsonError } from "@/lib/api";
 import { runBacktest } from "@/lib/quant/engine";
 import { getRequiredUserObjectId, QuantAuthError } from "@/lib/quant/auth";
 import { fetchHistoricalMarketData } from "@/lib/quant/market-data";
+import { ValidatedBacktestRequest, validateBacktestRequest } from "@/lib/quant/request-validation";
 import { getStrategyById } from "@/lib/quant/strategies";
 import { StrategyDefinition, StrategyRunInput } from "@/lib/quant/types";
 import { validateStrategyDefinition } from "@/lib/quant/validation";
@@ -16,9 +17,13 @@ export const POST = async (request: Request) => {
   const body = await getRequestBody<BacktestRequest>(request);
 
   if (!body) return jsonError("Invalid JSON payload.");
-  if (!body.symbol) return jsonError("Ticker symbol is required.");
-  if (!body.startDate || !body.endDate) return jsonError("Start and end dates are required.");
-  if (!body.capital || body.capital <= 0) return jsonError("Capital must be greater than zero.");
+  let validatedRun: ValidatedBacktestRequest;
+
+  try {
+    validatedRun = validateBacktestRequest(body);
+  } catch (error) {
+    return jsonError(error instanceof Error ? error.message : "Backtest request is invalid.");
+  }
 
   try {
     const userId = await getRequiredUserObjectId();
@@ -31,17 +36,18 @@ export const POST = async (request: Request) => {
       return jsonError("Select a valid strategy.");
     }
 
-    const benchmarkSymbol = body.benchmarkSymbol ?? strategy.benchmarkSymbol ?? undefined;
+    const benchmarkSymbol = validatedRun.benchmarkSymbol ?? strategy.benchmarkSymbol ?? undefined;
     const [primarySeries, benchmarkSeries] = await Promise.all([
-      fetchHistoricalMarketData(body.symbol, body.startDate, body.endDate),
+      fetchHistoricalMarketData(validatedRun.symbol, validatedRun.startDate, validatedRun.endDate),
       benchmarkSymbol
-        ? fetchHistoricalMarketData(benchmarkSymbol, body.startDate, body.endDate)
+        ? fetchHistoricalMarketData(benchmarkSymbol, validatedRun.startDate, validatedRun.endDate)
         : Promise.resolve(null),
     ]);
 
     const result = runBacktest(
       {
         ...body,
+        ...validatedRun,
         strategyId: strategy.id,
         customStrategy: strategy,
         benchmarkSymbol,
@@ -64,7 +70,7 @@ export const POST = async (request: Request) => {
           prompt: null,
           benchmarkSymbol: strategy.benchmarkSymbol ?? null,
           strategyDefinition: strategy,
-          symbolUniverse: [body.symbol.toUpperCase()],
+          symbolUniverse: [validatedRun.symbol],
         },
       },
       { upsert: true },

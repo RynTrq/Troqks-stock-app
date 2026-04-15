@@ -1,18 +1,42 @@
 import { NextResponse } from "next/server";
 import { connectToDatabase } from "@/database/mongoose";
-import PaperTradingSessionModel from "@/database/models/PaperTradingSession";
+import PaperTradingSessionModel, { type PaperTradingSessionDocument } from "@/database/models/PaperTradingSession";
 import StrategyExperimentModel from "@/database/models/StrategyExperiment";
 import { getRequestBody, jsonError } from "@/lib/api";
 import { buildPaperTradingSnapshot } from "@/lib/quant/engine";
 import { getOptionalUserObjectId, getRequiredUserObjectId, QuantAuthError } from "@/lib/quant/auth";
 import { fetchHistoricalMarketData } from "@/lib/quant/market-data";
+import { ValidatedPaperSessionRequest, validatePaperSessionRequest } from "@/lib/quant/request-validation";
 import { getStrategyById } from "@/lib/quant/strategies";
 import { PaperTradingSessionInput, StrategyDefinition } from "@/lib/quant/types";
 import { validateStrategyDefinition } from "@/lib/quant/validation";
 
 type CreatePaperSessionRequest = PaperTradingSessionInput;
 
-export const GET = async () => {
+const serializePaperSession = (session: PaperTradingSessionDocument) => {
+  if (!session) return null;
+
+  return {
+    sessionId: session._id.toString(),
+    symbol: session.symbol,
+    benchmarkSymbol: session.benchmarkSymbol,
+    strategyId: session.strategyId,
+    strategyName: session.strategyName,
+    status: session.status,
+    snapshot: session.snapshot,
+    trades: session.tradeLog,
+    tradeCount: session.tradeLog?.length ?? 0,
+    equityCurve: session.equityCurve,
+    initialCapital: session.initialCapital,
+    parameters: session.parameters,
+    createdAt: session.createdAt,
+    updatedAt: session.updatedAt,
+  };
+};
+
+export const GET = async (request: Request) => {
+  const { searchParams } = new URL(request.url);
+  const scope = searchParams.get("scope");
   const userId = await getOptionalUserObjectId();
 
   if (!userId) {
@@ -20,24 +44,12 @@ export const GET = async () => {
   }
 
   await connectToDatabase();
-  const sessions = await PaperTradingSessionModel.find({ userId })
-    .sort({ updatedAt: -1 })
-    .limit(12)
-    .lean();
+  const query = scope === "workspace" ? { userId, status: { $in: ["active", "paused"] } } : { userId };
+  const sessionsQuery = PaperTradingSessionModel.find(query).sort({ status: 1, updatedAt: -1 });
+  const sessions = await (scope === "workspace" ? sessionsQuery : sessionsQuery.limit(12));
 
   return NextResponse.json({
-    sessions: sessions.map((session) => ({
-      sessionId: session._id.toString(),
-      symbol: session.symbol,
-      benchmarkSymbol: session.benchmarkSymbol,
-      strategyId: session.strategyId,
-      strategyName: session.strategyName,
-      status: session.status,
-      snapshot: session.snapshot,
-      trades: session.tradeLog,
-      equityCurve: session.equityCurve,
-      updatedAt: session.updatedAt,
-    })),
+    sessions: sessions.map(serializePaperSession).filter(Boolean),
   });
 };
 
@@ -45,8 +57,13 @@ export const POST = async (request: Request) => {
   const body = await getRequestBody<CreatePaperSessionRequest>(request);
 
   if (!body) return jsonError("Invalid JSON payload.");
-  if (!body.symbol) return jsonError("Ticker symbol is required.");
-  if (!body.capital || body.capital <= 0) return jsonError("Capital must be greater than zero.");
+  let validatedSession: ValidatedPaperSessionRequest;
+
+  try {
+    validatedSession = validatePaperSessionRequest(body);
+  } catch (error) {
+    return jsonError(error instanceof Error ? error.message : "Paper trading request is invalid.");
+  }
 
   try {
     const userId = await getRequiredUserObjectId();
@@ -59,15 +76,16 @@ export const POST = async (request: Request) => {
       return jsonError("Select a valid strategy.");
     }
 
-    const benchmarkSymbol = body.benchmarkSymbol ?? strategy.benchmarkSymbol ?? undefined;
+    const benchmarkSymbol = validatedSession.benchmarkSymbol ?? strategy.benchmarkSymbol ?? undefined;
     const [primarySeries, benchmarkSeries] = await Promise.all([
-      fetchHistoricalMarketData(body.symbol),
+      fetchHistoricalMarketData(validatedSession.symbol),
       benchmarkSymbol ? fetchHistoricalMarketData(benchmarkSymbol) : Promise.resolve(null),
     ]);
 
     const { result, snapshot } = buildPaperTradingSnapshot(
       {
         ...body,
+        ...validatedSession,
         strategyId: strategy.id,
         customStrategy: strategy,
         benchmarkSymbol,
@@ -90,7 +108,7 @@ export const POST = async (request: Request) => {
           prompt: null,
           benchmarkSymbol: strategy.benchmarkSymbol ?? null,
           strategyDefinition: strategy,
-          symbolUniverse: [body.symbol.toUpperCase()],
+          symbolUniverse: [validatedSession.symbol],
         },
       },
       { upsert: true },
@@ -98,15 +116,15 @@ export const POST = async (request: Request) => {
 
     const session = await PaperTradingSessionModel.create({
       userId,
-      symbol: body.symbol.toUpperCase(),
+      symbol: validatedSession.symbol,
       benchmarkSymbol: benchmarkSymbol ?? null,
       strategyId: strategy.id,
       strategyName: strategy.name,
       strategyDefinition: strategy,
       parameters: result.parameters,
-      initialCapital: body.capital,
+      initialCapital: validatedSession.capital,
       status: "active",
-      lookbackBars: body.lookbackBars ?? 180,
+      lookbackBars: validatedSession.lookbackBars,
       snapshot,
       tradeLog: result.trades,
       equityCurve: result.equityCurve,
@@ -121,7 +139,12 @@ export const POST = async (request: Request) => {
       status: session.status,
       snapshot,
       trades: result.trades,
+      tradeCount: result.trades.length,
       equityCurve: result.equityCurve,
+      initialCapital: session.initialCapital,
+      parameters: session.parameters,
+      createdAt: session.createdAt,
+      updatedAt: session.updatedAt,
     });
   } catch (error) {
     if (error instanceof QuantAuthError) {

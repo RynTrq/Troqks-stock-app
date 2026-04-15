@@ -74,7 +74,12 @@ export const POST = async (_request: Request, context: RouteContext) => {
       status: session.status,
       snapshot,
       trades: result.trades,
+      tradeCount: result.trades.length,
       equityCurve: result.equityCurve,
+      initialCapital: session.initialCapital,
+      parameters: session.parameters,
+      createdAt: session.createdAt,
+      updatedAt: session.updatedAt,
     });
   } catch (error) {
     return jsonError(error instanceof Error ? error.message : "Unable to refresh paper session.", 500);

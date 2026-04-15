@@ -5,10 +5,12 @@ import Link from "next/link";
 import {Search} from "lucide-react";
 import {Input} from "@/components/ui/input";
 import {POPULAR_STOCKS} from "@/lib/constants";
-import {normalizeSymbol} from "@/lib/validation";
+import {isValidTickerSymbol, normalizeSymbol} from "@/lib/validation";
 
 const SearchPage = () => {
     const [query, setQuery] = useState("");
+    const customSymbol = normalizeSymbol(query);
+    const canOpenCustomSymbol = customSymbol.length > 0 && isValidTickerSymbol(customSymbol);
 
     const filteredStocks = useMemo(() => {
         const normalizedQuery = normalizeSymbol(query);
@@ -46,6 +48,24 @@ const SearchPage = () => {
                     aria-label="Search stocks"
                 />
             </div>
+
+            {canOpenCustomSymbol && !POPULAR_STOCKS.some((stock) => stock.symbol === customSymbol) && (
+                <div className="flex flex-col gap-4 rounded-md border border-teal-400/30 bg-teal-400/5 p-5 md:flex-row md:items-center md:justify-between">
+                    <div>
+                        <p className="text-sm font-semibold uppercase tracking-wide text-teal-300">Custom symbol</p>
+                        <h2 className="mt-1 text-xl font-semibold text-gray-100">Open {customSymbol} in the live workspace</h2>
+                        <p className="mt-1 text-sm text-gray-500">
+                            The dashboard can load any valid market symbol, even when it is not in the popular list.
+                        </p>
+                    </div>
+                    <Link
+                        href={`/?symbol=${customSymbol}`}
+                        className="inline-flex rounded-md bg-teal-400 px-4 py-2 font-medium text-gray-950 transition-colors hover:bg-teal-300"
+                    >
+                        Open {customSymbol}
+                    </Link>
+                </div>
+            )}
 
             <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
                 {filteredStocks.map((stock) => (

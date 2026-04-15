@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { BrainCircuit, Gauge, Play, RefreshCw, Rocket, TestTubeDiagonal } from "lucide-react";
+import { Activity, BrainCircuit, Gauge, Play, RefreshCw, Rocket, ShieldCheck, TestTubeDiagonal } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -29,6 +29,9 @@ type BacktestPayload = {
     symbol: string;
     strategy: StrategyDefinition;
     parameters: Record<string, number | string>;
+    startDate: string;
+    endDate: string;
+    initialCapital: number;
     metrics: {
       totalProfitLoss: number;
       returnPct: number;
@@ -40,13 +43,17 @@ type BacktestPayload = {
       sharpeRatio: number;
       endingCapital: number;
     };
-    equityCurve: Array<{ timestamp: string; equity: number }>;
+    equityCurve: Array<{ timestamp: string; equity: number; positionValue?: number }>;
     trades: Array<{
       id: string;
       entryTimestamp: string;
       exitTimestamp: string;
+      entryPrice?: number;
+      exitPrice?: number;
+      quantity?: number;
       profitLoss: number;
       returnPct: number;
+      barsHeld?: number;
       exitReason: string;
     }>;
   };
@@ -69,11 +76,13 @@ type PaperSessionPayload = {
   strategyId?: string;
   strategyName?: string;
   status?: "active" | "paused" | "closed";
+  initialCapital?: number;
+  parameters?: Record<string, number | string>;
   snapshot: {
     equity: number;
     realizedProfitLoss: number;
     lastEvaluatedAt: string;
-  };
+  } | null;
   trades: Array<{
     id: string;
     entryTimestamp: string;
@@ -82,7 +91,9 @@ type PaperSessionPayload = {
     returnPct: number;
     exitReason: string;
   }>;
+  tradeCount?: number;
   equityCurve: Array<{ timestamp: string; equity: number }>;
+  createdAt?: string;
   updatedAt?: string;
 };
 
@@ -105,6 +116,98 @@ const currency = (value: number) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(value);
 
 const pct = (value: number) => `${value.toFixed(2)}%`;
+const signedPct = (value: number) => `${value >= 0 ? "+" : ""}${pct(value)}`;
+const formatDateTime = (value?: string) => (value ? new Date(value).toLocaleString() : "Not available");
+const paperStatusOrder: Record<NonNullable<PaperSessionPayload["status"]>, number> = {
+  active: 0,
+  paused: 1,
+  closed: 2,
+};
+
+const getThreadLabel = (session: PaperSessionPayload) =>
+  `${session.symbol ?? "Symbol"} / ${session.strategyName ?? "Strategy"}`;
+
+const getPaperSessionEquity = (session: PaperSessionPayload) => session.snapshot?.equity ?? session.initialCapital ?? 0;
+const getPaperSessionRealizedPnl = (session: PaperSessionPayload) => session.snapshot?.realizedProfitLoss ?? 0;
+const getPaperSessionTradeCount = (session: PaperSessionPayload) => session.tradeCount ?? session.trades.length;
+const getPaperSessionLastEvaluatedAt = (session: PaperSessionPayload) => session.snapshot?.lastEvaluatedAt ?? session.updatedAt;
+
+const sortPaperSessions = (sessions: PaperSessionPayload[]) =>
+  [...sessions].sort((left, right) => {
+    const statusDelta = paperStatusOrder[left.status ?? "active"] - paperStatusOrder[right.status ?? "active"];
+
+    if (statusDelta !== 0) return statusDelta;
+
+    return new Date(right.updatedAt ?? right.snapshot?.lastEvaluatedAt ?? 0).getTime() -
+      new Date(left.updatedAt ?? left.snapshot?.lastEvaluatedAt ?? 0).getTime();
+  });
+
+const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
+
+const getYearsBetween = (startDate: string, endDate: string) => {
+  const start = new Date(startDate).getTime();
+  const end = new Date(endDate).getTime();
+
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return 1;
+
+  return Math.max((end - start) / (1000 * 60 * 60 * 24 * 365.25), 1 / 12);
+};
+
+const getResearchBrief = (result: BacktestPayload["result"]) => {
+  const { metrics, trades, equityCurve } = result;
+  const years = getYearsBetween(result.startDate, result.endDate);
+  const cagr = ((metrics.endingCapital / result.initialCapital) ** (1 / years) - 1) * 100;
+  const calmar = metrics.maxDrawdownPct > 0 ? cagr / metrics.maxDrawdownPct : cagr;
+  const exposurePct =
+    equityCurve.length > 0
+      ? (equityCurve.filter((point) => (point.positionValue ?? 0) > 0).length / equityCurve.length) * 100
+      : 0;
+  const averageHoldBars =
+    trades.length > 0 ? trades.reduce((sum, trade) => sum + (trade.barsHeld ?? 0), 0) / trades.length : 0;
+  const bestTrade = trades.length > 0 ? Math.max(...trades.map((trade) => trade.returnPct)) : 0;
+  const worstTrade = trades.length > 0 ? Math.min(...trades.map((trade) => trade.returnPct)) : 0;
+  const tradeFrequency = trades.length / years;
+  const riskScore = clamp(
+    Math.round(
+      100 -
+        metrics.maxDrawdownPct * 1.8 +
+        Math.min(Math.max(metrics.sharpeRatio, -1), 3) * 12 +
+        Math.min(metrics.winRatePct, 80) * 0.25 +
+        Math.min(Math.max(calmar, -2), 5) * 6,
+    ),
+    0,
+    100,
+  );
+  const verdict =
+    riskScore >= 78
+      ? "Production watchlist"
+      : riskScore >= 58
+        ? "Promising research candidate"
+        : riskScore >= 40
+          ? "Needs parameter review"
+          : "High-risk experiment";
+  const narrative =
+    metrics.numberOfTrades === 0
+      ? "The strategy stayed flat in this window. Expand the date range or loosen the entry logic before trusting the read."
+      : metrics.returnPct > 0 && metrics.maxDrawdownPct < 20 && metrics.sharpeRatio > 0.7
+        ? "The run shows positive returns with controlled drawdown and a usable risk-adjusted profile."
+        : metrics.returnPct > 0
+          ? "The run made money, but the drawdown and trade quality deserve a closer look before scaling."
+          : "The run lost money in this window. Treat it as a diagnostic pass and revise the signal or risk rules.";
+
+  return {
+    cagr,
+    calmar,
+    exposurePct,
+    averageHoldBars,
+    bestTrade,
+    worstTrade,
+    tradeFrequency,
+    riskScore,
+    verdict,
+    narrative,
+  };
+};
 
 const readJson = async <TPayload,>(response: Response): Promise<TPayload> => {
   const payload = await response.json();
@@ -134,7 +237,8 @@ const QuantLab = () => {
   const [endDate, setEndDate] = useState("");
   const [parameterOverrides, setParameterOverrides] = useState<Record<string, string>>({});
   const [backtest, setBacktest] = useState<BacktestPayload | null>(null);
-  const [paperSession, setPaperSession] = useState<PaperSessionPayload | null>(null);
+  const [paperSessions, setPaperSessions] = useState<PaperSessionPayload[]>([]);
+  const [selectedPaperSessionId, setSelectedPaperSessionId] = useState<string | null>(null);
   const [generatedStrategy, setGeneratedStrategy] = useState<GeneratedPayload | null>(null);
   const [aiMode, setAiMode] = useState<AiMode>("edit");
   const [customStrategyName, setCustomStrategyName] = useState("Momentum Volume Breakout");
@@ -142,25 +246,9 @@ const QuantLab = () => {
     "Make entries stricter by requiring RSI confirmation and add a tighter trailing stop.",
   );
   const [status, setStatus] = useState<string | null>(null);
-  const [loadingState, setLoadingState] = useState<"" | "backtest" | "ai" | "paper" | "refresh">("");
+  const [loadingState, setLoadingState] = useState<"" | "backtest" | "ai" | "paper">("");
+  const [loadingSessionId, setLoadingSessionId] = useState<string | null>(null);
   const backtestResultsRef = useRef<HTMLElement | null>(null);
-
-  const loadPaperSessions = async (targetSessionId?: string) => {
-    const response = await fetch("/api/quant/paper-sessions");
-    const payload = await readJson<{ sessions: PaperSessionPayload[] }>(response);
-
-    if (payload.sessions.length === 0) {
-      setPaperSession(null);
-      return;
-    }
-
-    const targetSession =
-      (targetSessionId
-        ? payload.sessions.find((session) => session.sessionId === targetSessionId)
-        : null) ?? payload.sessions[0];
-
-    setPaperSession(targetSession);
-  };
 
   const loadHistory = async () => {
     const response = await fetch("/api/quant/history");
@@ -185,7 +273,7 @@ const QuantLab = () => {
         const [strategiesResponse, historyResponse, paperSessionsResponse] = await Promise.all([
           fetch("/api/quant/strategies"),
           fetch("/api/quant/history"),
-          fetch("/api/quant/paper-sessions"),
+          fetch("/api/quant/paper-sessions?scope=workspace"),
         ]);
 
         const [strategiesJson, historyJson, paperSessionsJson] = await Promise.all([
@@ -196,9 +284,10 @@ const QuantLab = () => {
 
         setStrategiesPayload(strategiesJson);
         setHistory(historyJson);
-        if (paperSessionsJson.sessions.length > 0) {
-          setPaperSession(paperSessionsJson.sessions[0]);
-        }
+        const sortedPaperSessions = sortPaperSessions(paperSessionsJson.sessions);
+
+        setPaperSessions(sortedPaperSessions);
+        setSelectedPaperSessionId(sortedPaperSessions[0]?.sessionId ?? null);
       } catch (error) {
         setStatus(error instanceof Error ? error.message : "Unable to load quant workspace.");
       }
@@ -255,6 +344,51 @@ const QuantLab = () => {
       href: "/quant-history?section=my-strategies#my-strategies",
     },
   ];
+
+  const researchBrief = useMemo(() => (backtest ? getResearchBrief(backtest.result) : null), [backtest]);
+  const livePaperSessions = useMemo(
+    () => paperSessions.filter((session) => session.status === "active" || session.status === "paused"),
+    [paperSessions],
+  );
+  const activePaperSessions = useMemo(
+    () => livePaperSessions.filter((session) => session.status === "active"),
+    [livePaperSessions],
+  );
+  const pausedPaperSessions = useMemo(
+    () => livePaperSessions.filter((session) => session.status === "paused"),
+    [livePaperSessions],
+  );
+  const selectedPaperSession = useMemo(
+    () => livePaperSessions.find((session) => session.sessionId === selectedPaperSessionId) ?? livePaperSessions[0] ?? null,
+    [livePaperSessions, selectedPaperSessionId],
+  );
+  const latestSavedBacktest = history?.backtests[0] ?? null;
+  const latestSavedStrategy = history?.strategies.find((item) => item.prompt) ?? null;
+
+  useEffect(() => {
+    if (livePaperSessions.length === 0) {
+      if (selectedPaperSessionId) setSelectedPaperSessionId(null);
+      return;
+    }
+
+    if (!selectedPaperSessionId || !livePaperSessions.some((session) => session.sessionId === selectedPaperSessionId)) {
+      setSelectedPaperSessionId(livePaperSessions[0].sessionId);
+    }
+  }, [livePaperSessions, selectedPaperSessionId]);
+
+  const upsertPaperSession = (session: PaperSessionPayload) => {
+    setPaperSessions((current) => {
+      if (session.status === "closed") {
+        return current.filter((item) => item.sessionId !== session.sessionId);
+      }
+
+      return sortPaperSessions([...current.filter((item) => item.sessionId !== session.sessionId), session]);
+    });
+
+    if (session.status !== "closed") {
+      setSelectedPaperSessionId(session.sessionId);
+    }
+  };
 
   const resolvedParameters = useMemo(
     () =>
@@ -395,10 +529,11 @@ const QuantLab = () => {
     });
 
     try {
-      setPaperSession(await readJson<PaperSessionPayload>(response));
-      setStatus("Paper trading session started.");
+      const session = await readJson<PaperSessionPayload>(response);
+
+      upsertPaperSession(session);
+      setStatus("Paper trading thread started.");
       void loadHistory();
-      void loadPaperSessions();
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "Unable to start paper trading.");
     } finally {
@@ -406,51 +541,55 @@ const QuantLab = () => {
     }
   };
 
-  const refreshPaperTrading = async () => {
-    if (!paperSession) return;
-    setLoadingState("refresh");
-    const response = await fetch(`/api/quant/paper-sessions/${paperSession.sessionId}/refresh`, {
+  const refreshPaperTrading = async (sessionId: string) => {
+    const session = livePaperSessions.find((item) => item.sessionId === sessionId);
+
+    if (!session || session.status !== "active") return;
+
+    setLoadingSessionId(sessionId);
+    const response = await fetch(`/api/quant/paper-sessions/${sessionId}/refresh`, {
       method: "POST",
     });
 
     try {
-      setPaperSession(await readJson<PaperSessionPayload>(response));
-      setStatus("Paper trading session refreshed against the latest available market data.");
+      upsertPaperSession(await readJson<PaperSessionPayload>(response));
+      setStatus(`${getThreadLabel(session)} refreshed against the latest available market data.`);
       void loadHistory();
-      void loadPaperSessions();
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "Unable to refresh paper trading session.");
     } finally {
-      setLoadingState("");
+      setLoadingSessionId(null);
     }
   };
 
-  const updatePaperTradingStatus = async (nextStatus: "paused" | "closed" | "active") => {
-    if (!paperSession) return;
-    setLoadingState("refresh");
+  const updatePaperTradingStatus = async (sessionId: string, nextStatus: "paused" | "closed" | "active") => {
+    const session = livePaperSessions.find((item) => item.sessionId === sessionId);
+
+    if (!session) return;
+
+    setLoadingSessionId(sessionId);
     setStatus(null);
 
-    const response = await fetch(`/api/quant/paper-sessions/${paperSession.sessionId}`, {
+    const response = await fetch(`/api/quant/paper-sessions/${sessionId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ status: nextStatus }),
     });
 
     try {
-      setPaperSession(await readJson<PaperSessionPayload>(response));
+      upsertPaperSession(await readJson<PaperSessionPayload>(response));
       setStatus(
         nextStatus === "closed"
-          ? "Paper trading session stopped."
+          ? `${getThreadLabel(session)} stopped and moved to Quant History.`
           : nextStatus === "paused"
-            ? "Paper trading session paused."
-            : "Paper trading session resumed.",
+            ? `${getThreadLabel(session)} paused.`
+            : `${getThreadLabel(session)} resumed.`,
       );
       void loadHistory();
-      void loadPaperSessions();
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "Unable to update paper trading session.");
     } finally {
-      setLoadingState("");
+      setLoadingSessionId(null);
     }
   };
 
@@ -481,6 +620,134 @@ const QuantLab = () => {
             </Link>
           ))}
         </div>
+      </section>
+
+      <section className="rounded-md border border-gray-700 bg-gray-800/70 p-5">
+        <div className="mb-5 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+          <div>
+            <p className="text-sm font-semibold uppercase tracking-wide text-teal-400">Current Work</p>
+            <h2 className="mt-1 text-2xl font-semibold text-gray-100">Live workspace</h2>
+            <p className="mt-1 text-sm text-gray-500">
+              Active and paused paper threads appear first. When none are running, the latest real saved work is shown.
+            </p>
+          </div>
+          <Button asChild variant="outline" className="border-gray-600 bg-transparent text-gray-100">
+            <Link href="/quant-history">Open Quant History</Link>
+          </Button>
+        </div>
+
+        {livePaperSessions.length > 0 ? (
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+            {livePaperSessions.map((session) => {
+              const isLoading = loadingSessionId === session.sessionId;
+
+              return (
+                <button
+                  key={session.sessionId}
+                  type="button"
+                  onClick={() => setSelectedPaperSessionId(session.sessionId)}
+                  className={`rounded-md border p-4 text-left transition-colors ${
+                    selectedPaperSession?.sessionId === session.sessionId
+                      ? "border-teal-400 bg-teal-400/10"
+                      : "border-gray-700 bg-gray-900/70 hover:border-gray-600"
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="font-semibold text-gray-100">{getThreadLabel(session)}</p>
+                      <p className="mt-1 text-xs text-gray-500">Updated {formatDateTime(session.updatedAt)}</p>
+                    </div>
+                    <span
+                      className={`rounded-md px-2 py-1 text-xs font-semibold uppercase tracking-wide ${
+                        session.status === "active" ? "bg-teal-400/10 text-teal-400" : "bg-yellow-500/10 text-yellow-400"
+                      }`}
+                    >
+                      {session.status}
+                    </span>
+                  </div>
+                  <div className="mt-4 grid grid-cols-3 gap-3 text-sm">
+                    <div>
+                      <p className="text-gray-500">Equity</p>
+                      <p className="mt-1 font-semibold text-gray-100">{currency(getPaperSessionEquity(session))}</p>
+                    </div>
+                    <div>
+                      <p className="text-gray-500">Realized P&L</p>
+                      <p className="mt-1 font-semibold text-gray-100">{currency(getPaperSessionRealizedPnl(session))}</p>
+                    </div>
+                    <div>
+                      <p className="text-gray-500">Trades</p>
+                      <p className="mt-1 font-semibold text-gray-100">{getPaperSessionTradeCount(session)}</p>
+                    </div>
+                  </div>
+                  <div className="mt-4 flex items-center justify-between gap-3 text-xs text-gray-500">
+                    <span>Last evaluated {formatDateTime(getPaperSessionLastEvaluatedAt(session))}</span>
+                    <span className="font-semibold text-teal-400">{isLoading ? "Working..." : "View thread"}</span>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        ) : backtest ? (
+          <div className="rounded-md border border-yellow-500/30 bg-yellow-500/10 p-4">
+            <p className="text-sm font-semibold uppercase tracking-wide text-yellow-400">Latest Backtest In This Session</p>
+            <div className="mt-3 grid gap-4 md:grid-cols-[1fr_auto] md:items-end">
+              <div>
+                <h3 className="text-xl font-semibold text-gray-100">
+                  {backtest.result.symbol} / {backtest.result.strategy.name}
+                </h3>
+                <p className="mt-1 text-sm text-gray-400">
+                  Ending capital {currency(backtest.result.metrics.endingCapital)} with {backtest.result.metrics.numberOfTrades} trades.
+                </p>
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                className="border-yellow-500/40 bg-transparent text-yellow-300"
+                onClick={() => backtestResultsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })}
+              >
+                Review Run
+              </Button>
+            </div>
+          </div>
+        ) : latestSavedBacktest ? (
+          <div className="rounded-md border border-gray-700 bg-gray-900/70 p-4">
+            <p className="text-sm font-semibold uppercase tracking-wide text-yellow-400">Latest Saved Backtest</p>
+            <div className="mt-3 grid gap-4 md:grid-cols-[1fr_auto] md:items-end">
+              <div>
+                <h3 className="text-xl font-semibold text-gray-100">
+                  {latestSavedBacktest.symbol} / {latestSavedBacktest.strategyName}
+                </h3>
+                <p className="mt-1 text-sm text-gray-400">
+                  {pct(latestSavedBacktest.metrics.returnPct)} return, {latestSavedBacktest.metrics.numberOfTrades} trades, saved{" "}
+                  {formatDateTime(latestSavedBacktest.createdAt)}.
+                </p>
+              </div>
+              <Button asChild variant="outline" className="border-gray-600 bg-transparent text-gray-100">
+                <Link href="/quant-history?section=backtests#backtests">Open Backtests</Link>
+              </Button>
+            </div>
+          </div>
+        ) : latestSavedStrategy ? (
+          <div className="rounded-md border border-teal-400/20 bg-teal-400/5 p-4">
+            <p className="text-sm font-semibold uppercase tracking-wide text-teal-300">Latest Saved AI Strategy</p>
+            <div className="mt-3 grid gap-4 md:grid-cols-[1fr_auto] md:items-end">
+              <div>
+                <h3 className="text-xl font-semibold text-gray-100">{latestSavedStrategy.name}</h3>
+                <p className="mt-1 text-sm text-gray-400">
+                  {latestSavedStrategy.category} strategy saved {formatDateTime(latestSavedStrategy.updatedAt)}.
+                </p>
+              </div>
+              <Button asChild variant="outline" className="border-teal-400/40 bg-transparent text-teal-300">
+                <Link href="/quant-history?section=my-strategies#my-strategies">Open Strategies</Link>
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <div className="rounded-md border border-dashed border-gray-700 bg-gray-900/50 p-8 text-center">
+            <p className="text-lg font-semibold text-gray-100">No current work yet</p>
+            <p className="mt-2 text-sm text-gray-500">Run a backtest, save an AI strategy, or start a paper thread to begin.</p>
+          </div>
+        )}
       </section>
 
       <section className="grid gap-8 xl:grid-cols-[0.9fr_1.1fr]">
@@ -623,9 +890,9 @@ const QuantLab = () => {
                 onClick={startPaperTrading}
                 variant="outline"
                 className="border-gray-600 bg-transparent text-gray-100"
-                disabled={loadingState !== "" || paperSession?.status === "active"}
+                disabled={loadingState !== ""}
               >
-                {loadingState === "paper" ? "Starting..." : paperSession?.status === "active" ? "Paper Trading Active" : "Start Paper Trading"}
+                {loadingState === "paper" ? "Starting..." : "Start Paper Thread"}
               </Button>
             </div>
             {status && <p className="mt-4 text-sm text-teal-400">{status}</p>}
@@ -765,6 +1032,60 @@ const QuantLab = () => {
             ))}
           </div>
 
+          {researchBrief && (
+            <div className="grid gap-5 xl:grid-cols-[0.85fr_1.15fr]">
+              <div className="rounded-md border border-teal-400/20 bg-[linear-gradient(135deg,rgba(15,237,190,0.12),rgba(20,20,20,0.92)_48%,rgba(253,212,88,0.10))] p-5">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <p className="text-sm font-semibold uppercase tracking-wide text-teal-300">Research Brief</p>
+                    <h3 className="mt-2 text-2xl font-semibold text-gray-100">{researchBrief.verdict}</h3>
+                  </div>
+                  <ShieldCheck className="h-6 w-6 text-teal-300" />
+                </div>
+                <div className="mt-6">
+                  <div className="flex items-end justify-between">
+                    <span className="text-sm text-gray-400">Strategy Quality Score</span>
+                    <span className="text-3xl font-semibold text-gray-100">{researchBrief.riskScore}</span>
+                  </div>
+                  <div className="mt-3 h-3 overflow-hidden rounded-full bg-gray-900">
+                    <div
+                      className="h-full rounded-full bg-gradient-to-r from-red-500 via-yellow-400 to-teal-400"
+                      style={{ width: `${researchBrief.riskScore}%` }}
+                    />
+                  </div>
+                </div>
+                <p className="mt-5 text-sm leading-7 text-gray-300">{researchBrief.narrative}</p>
+              </div>
+
+              <div className="rounded-md border border-gray-700 bg-gray-800/70 p-5">
+                <div className="mb-4 flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-semibold uppercase tracking-wide text-yellow-400">Performance Diagnostics</p>
+                    <h3 className="mt-1 text-xl font-semibold text-gray-100">Risk, pacing, and trade quality</h3>
+                  </div>
+                  <Activity className="h-5 w-5 text-yellow-400" />
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                  {[
+                    { label: "CAGR", value: signedPct(researchBrief.cagr), tone: researchBrief.cagr >= 0 ? "text-teal-400" : "text-red-400" },
+                    { label: "Calmar", value: researchBrief.calmar.toFixed(2), tone: researchBrief.calmar >= 0 ? "text-teal-400" : "text-red-400" },
+                    { label: "Exposure", value: pct(researchBrief.exposurePct), tone: "text-gray-100" },
+                    { label: "Trades / Year", value: researchBrief.tradeFrequency.toFixed(1), tone: "text-gray-100" },
+                    { label: "Avg Hold", value: `${researchBrief.averageHoldBars.toFixed(1)} bars`, tone: "text-gray-100" },
+                    { label: "Avg Trade", value: signedPct(backtest.result.metrics.averageTradeReturnPct), tone: backtest.result.metrics.averageTradeReturnPct >= 0 ? "text-teal-400" : "text-red-400" },
+                    { label: "Best Trade", value: signedPct(researchBrief.bestTrade), tone: "text-teal-400" },
+                    { label: "Worst Trade", value: signedPct(researchBrief.worstTrade), tone: "text-red-400" },
+                  ].map((metric) => (
+                    <div key={metric.label} className="rounded-md border border-gray-700 bg-gray-900/70 p-3">
+                      <p className="text-xs uppercase tracking-wide text-gray-500">{metric.label}</p>
+                      <p className={`mt-2 text-lg font-semibold ${metric.tone}`}>{metric.value}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
           <EquityCurveChart points={backtest.result.equityCurve} />
 
           <div className="rounded-md border border-gray-700 bg-gray-800/70 p-5">
@@ -813,105 +1134,184 @@ const QuantLab = () => {
 
       <section className="grid gap-6 xl:grid-cols-[0.9fr_1.1fr]">
         <div className="rounded-md border border-gray-700 bg-gray-800/70 p-5">
-            <div className="mb-4 flex items-center justify-between gap-3">
-              <div>
-                <h2 className="text-xl font-semibold text-gray-100">Paper Trading</h2>
-                <p className="text-sm text-gray-500">Track a live simulation snapshot using the latest available market data.</p>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <Button
-                  variant="outline"
-                  className="border-gray-600 bg-transparent text-gray-100"
-                  onClick={refreshPaperTrading}
-                  disabled={!paperSession || paperSession.status !== "active"}
-                >
-                  <RefreshCw className="mr-2 h-4 w-4" />
-                  {loadingState === "refresh" ? "Refreshing..." : "Refresh"}
-                </Button>
-                {paperSession?.status === "active" && (
-                  <Button
-                    variant="outline"
-                    className="border-yellow-500/40 bg-transparent text-yellow-400 hover:bg-yellow-500/10"
-                    onClick={() => updatePaperTradingStatus("paused")}
-                    disabled={loadingState !== ""}
-                  >
-                    Pause
-                  </Button>
-                )}
-                {paperSession?.status === "paused" && (
-                  <Button
-                    variant="outline"
-                    className="border-teal-400/40 bg-transparent text-teal-400 hover:bg-teal-400/10"
-                    onClick={() => updatePaperTradingStatus("active")}
-                    disabled={loadingState !== ""}
-                  >
-                    Resume
-                  </Button>
-                )}
-                {paperSession && paperSession.status !== "closed" && (
-                  <Button
-                    variant="outline"
-                    className="border-red-500/40 bg-transparent text-red-400 hover:bg-red-500/10"
-                    onClick={() => updatePaperTradingStatus("closed")}
-                    disabled={loadingState !== ""}
-                  >
-                    Stop
-                  </Button>
-                )}
-              </div>
+          <div className="mb-5 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+            <div>
+              <h2 className="text-xl font-semibold text-gray-100">Live Paper Threads</h2>
+              <p className="text-sm text-gray-500">
+                {activePaperSessions.length} active, {pausedPaperSessions.length} paused.
+              </p>
             </div>
+            <Button asChild variant="outline" className="border-gray-600 bg-transparent text-gray-100">
+              <Link href="/quant-history?section=paper-sessions#paper-sessions">Closed Threads</Link>
+            </Button>
+          </div>
 
-          {paperSession ? (
-            <div className="space-y-4">
-              <div className="flex items-center justify-between rounded-md border border-gray-700 bg-gray-900/70 px-4 py-3">
+          {livePaperSessions.length > 0 ? (
+            <div className="max-h-[680px] space-y-3 overflow-y-auto pr-1">
+              {livePaperSessions.map((session) => {
+                const isSelected = selectedPaperSession?.sessionId === session.sessionId;
+                const isLoading = loadingSessionId === session.sessionId;
+
+                return (
+                  <div
+                    key={session.sessionId}
+                    className={`rounded-md border p-4 transition-colors ${
+                      isSelected ? "border-teal-400 bg-teal-400/10" : "border-gray-700 bg-gray-900/70"
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <h3 className="font-semibold text-gray-100">{getThreadLabel(session)}</h3>
+                        <p className="mt-1 text-xs text-gray-500">Created {formatDateTime(session.createdAt)}</p>
+                      </div>
+                      <span
+                        className={`rounded-md px-2 py-1 text-xs font-semibold uppercase tracking-wide ${
+                          session.status === "active" ? "bg-teal-400/10 text-teal-400" : "bg-yellow-500/10 text-yellow-400"
+                        }`}
+                      >
+                        {session.status}
+                      </span>
+                    </div>
+
+                    <div className="mt-4 grid grid-cols-3 gap-3 text-sm">
+                      <div>
+                        <p className="text-gray-500">Equity</p>
+                        <p className="mt-1 font-semibold text-gray-100">{currency(getPaperSessionEquity(session))}</p>
+                      </div>
+                      <div>
+                        <p className="text-gray-500">Realized P&L</p>
+                        <p className="mt-1 font-semibold text-gray-100">{currency(getPaperSessionRealizedPnl(session))}</p>
+                      </div>
+                      <div>
+                        <p className="text-gray-500">Trades</p>
+                        <p className="mt-1 font-semibold text-gray-100">{getPaperSessionTradeCount(session)}</p>
+                      </div>
+                    </div>
+
+                    <p className="mt-3 text-xs text-gray-500">Last evaluated {formatDateTime(getPaperSessionLastEvaluatedAt(session))}</p>
+
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant={isSelected ? "secondary" : "outline"}
+                        className={
+                          isSelected
+                            ? "bg-teal-400 text-gray-950 hover:bg-teal-400/90"
+                            : "border-gray-600 bg-transparent text-gray-100"
+                        }
+                        onClick={() => setSelectedPaperSessionId(session.sessionId)}
+                      >
+                        View
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="border-gray-600 bg-transparent text-gray-100"
+                        onClick={() => void refreshPaperTrading(session.sessionId)}
+                        disabled={session.status !== "active" || isLoading}
+                      >
+                        <RefreshCw className="mr-2 h-4 w-4" />
+                        {isLoading && session.status === "active" ? "Refreshing..." : "Refresh"}
+                      </Button>
+                      {session.status === "active" ? (
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="border-yellow-500/40 bg-transparent text-yellow-400 hover:bg-yellow-500/10"
+                          onClick={() => void updatePaperTradingStatus(session.sessionId, "paused")}
+                          disabled={isLoading}
+                        >
+                          Pause
+                        </Button>
+                      ) : (
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="border-teal-400/40 bg-transparent text-teal-400 hover:bg-teal-400/10"
+                          onClick={() => void updatePaperTradingStatus(session.sessionId, "active")}
+                          disabled={isLoading}
+                        >
+                          Resume
+                        </Button>
+                      )}
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="border-red-500/40 bg-transparent text-red-400 hover:bg-red-500/10"
+                        onClick={() => void updatePaperTradingStatus(session.sessionId, "closed")}
+                        disabled={isLoading}
+                      >
+                        Stop
+                      </Button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="rounded-md border border-dashed border-gray-700 bg-gray-900/50 p-8 text-center">
+              <p className="font-semibold text-gray-100">No live paper threads</p>
+              <p className="mt-2 text-sm text-gray-500">
+                Start a paper thread from the selected strategy. Active and paused threads will stay here.
+              </p>
+            </div>
+          )}
+        </div>
+
+        <div className="rounded-md border border-gray-700 bg-gray-800/70 p-5">
+          {selectedPaperSession ? (
+            <div className="space-y-5">
+              <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                 <div>
-                  <p className="text-sm font-medium text-gray-100">Session Status</p>
-                  <p className="text-sm text-gray-500">
-                    {paperSession.status === "active"
-                      ? "The simulator can refresh against the latest market data."
-                      : paperSession.status === "paused"
-                        ? "The simulator is paused and will not refresh until resumed."
-                        : "The simulator has been stopped and kept for history."}
-                  </p>
+                  <h2 className="text-xl font-semibold text-gray-100">Selected Thread Detail</h2>
+                  <p className="mt-1 text-sm text-gray-500">{getThreadLabel(selectedPaperSession)}</p>
                 </div>
                 <span
-                  className={`rounded-md px-3 py-1 text-xs font-semibold uppercase tracking-wide ${
-                    paperSession.status === "active"
-                      ? "bg-teal-400/10 text-teal-400"
-                      : paperSession.status === "paused"
-                        ? "bg-yellow-500/10 text-yellow-400"
-                        : "bg-red-500/10 text-red-400"
+                  className={`w-fit rounded-md px-3 py-1 text-xs font-semibold uppercase tracking-wide ${
+                    selectedPaperSession.status === "active" ? "bg-teal-400/10 text-teal-400" : "bg-yellow-500/10 text-yellow-400"
                   }`}
                 >
-                  {paperSession.status ?? "active"}
+                  {selectedPaperSession.status}
                 </span>
               </div>
-              <div className="grid gap-4 md:grid-cols-3">
+
+              <div className="grid gap-4 md:grid-cols-4">
                 <div className="rounded-md border border-gray-700 bg-gray-900/70 p-4">
                   <p className="text-sm text-gray-500">Equity</p>
-                  <p className="mt-2 text-2xl font-semibold text-gray-100">{currency(paperSession.snapshot.equity)}</p>
+                  <p className="mt-2 text-2xl font-semibold text-gray-100">{currency(getPaperSessionEquity(selectedPaperSession))}</p>
                 </div>
                 <div className="rounded-md border border-gray-700 bg-gray-900/70 p-4">
                   <p className="text-sm text-gray-500">Realized P&L</p>
-                  <p className="mt-2 text-2xl font-semibold text-gray-100">{currency(paperSession.snapshot.realizedProfitLoss)}</p>
+                  <p className="mt-2 text-2xl font-semibold text-gray-100">{currency(getPaperSessionRealizedPnl(selectedPaperSession))}</p>
+                </div>
+                <div className="rounded-md border border-gray-700 bg-gray-900/70 p-4">
+                  <p className="text-sm text-gray-500">Trades</p>
+                  <p className="mt-2 text-2xl font-semibold text-gray-100">{getPaperSessionTradeCount(selectedPaperSession)}</p>
                 </div>
                 <div className="rounded-md border border-gray-700 bg-gray-900/70 p-4">
                   <p className="text-sm text-gray-500">Last Evaluation</p>
-                  <p className="mt-2 text-base font-semibold text-gray-100">
-                    {new Date(paperSession.snapshot.lastEvaluatedAt).toLocaleString()}
+                  <p className="mt-2 text-sm font-semibold text-gray-100">
+                    {formatDateTime(getPaperSessionLastEvaluatedAt(selectedPaperSession))}
                   </p>
                 </div>
               </div>
-              <EquityCurveChart points={paperSession.equityCurve} />
+
+              <EquityCurveChart points={selectedPaperSession.equityCurve} />
+
               <div className="rounded-md border border-gray-700 bg-gray-900/70 p-5">
                 <div className="mb-4 flex items-center justify-between">
                   <div>
-                    <h3 className="text-lg font-semibold text-gray-100">Paper Trade Log</h3>
-                    <p className="text-sm text-gray-500">Persisted trades for the current paper session.</p>
+                    <h3 className="text-lg font-semibold text-gray-100">Thread Trade Log</h3>
+                    <p className="text-sm text-gray-500">Persisted entries and exits for the selected paper thread.</p>
                   </div>
-                  <p className="text-sm text-gray-400">{paperSession.trades.length} trades</p>
+                  <p className="text-sm text-gray-400">{selectedPaperSession.trades.length} trades</p>
                 </div>
-                {paperSession.trades.length > 0 ? (
+                {selectedPaperSession.trades.length > 0 ? (
                   <div className="overflow-x-auto">
                     <table className="min-w-full text-left text-sm">
                       <thead className="text-gray-500">
@@ -924,7 +1324,7 @@ const QuantLab = () => {
                         </tr>
                       </thead>
                       <tbody className="text-gray-300">
-                        {paperSession.trades.slice(-10).map((trade) => (
+                        {selectedPaperSession.trades.slice(-10).map((trade) => (
                           <tr key={trade.id} className="border-t border-gray-700">
                             <td className="py-3 pr-6">{new Date(trade.entryTimestamp).toLocaleDateString()}</td>
                             <td className="py-3 pr-6">{new Date(trade.exitTimestamp).toLocaleDateString()}</td>
@@ -940,79 +1340,78 @@ const QuantLab = () => {
                   </div>
                 ) : (
                   <div className="rounded-md border border-dashed border-gray-700 p-6 text-center text-sm text-gray-500">
-                    No paper trades have been recorded for this session yet.
+                    Trade log is empty for this thread.
                   </div>
                 )}
               </div>
             </div>
           ) : (
-            <div className="rounded-md border border-dashed border-gray-700 p-8 text-center text-gray-500">
-              Start a paper trading session to persist a live simulation ledger.
-            </div>
-          )}
-        </div>
-
-        <div className="rounded-md border border-gray-700 bg-gray-800/70 p-5">
-          <div className="mb-4">
-            <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+            <div className="space-y-5">
               <div>
-                <h2 className="text-xl font-semibold text-gray-100">Experiment History</h2>
-                <p className="text-sm text-gray-500">Saved AI strategies, backtests, and paper sessions ready for comparison.</p>
+                <h2 className="text-xl font-semibold text-gray-100">Recent Work</h2>
+                <p className="mt-1 text-sm text-gray-500">Latest real work appears here when no paper threads are live.</p>
               </div>
-              <Button asChild variant="outline" className="border-gray-600 bg-transparent text-gray-100">
-                <Link href="/quant-history">Open Full Quant History</Link>
-              </Button>
-            </div>
-          </div>
 
-          <div className="grid gap-4 md:grid-cols-3">
-            <div className="space-y-3">
-              <p className="text-sm font-semibold uppercase tracking-wide text-teal-400">My Own Strategies</p>
-              {history?.strategies.filter((item) => item.prompt).slice(0, 6).map((item) => (
-                <div key={item._id} className="rounded-md border border-teal-400/20 bg-teal-400/5 p-4 shadow-[0_0_0_1px_rgba(45,212,191,0.04)]">
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <p className="font-medium text-gray-100">{item.name}</p>
-                      <p className="mt-1 text-xs uppercase tracking-wide text-teal-300">{item.category}</p>
+              {backtest ? (
+                <div className="rounded-md border border-yellow-500/30 bg-yellow-500/10 p-5">
+                  <p className="text-sm font-semibold uppercase tracking-wide text-yellow-400">Latest Backtest In This Session</p>
+                  <h3 className="mt-2 text-2xl font-semibold text-gray-100">
+                    {backtest.result.symbol} / {backtest.result.strategy.name}
+                  </h3>
+                  <div className="mt-5 grid gap-3 md:grid-cols-3">
+                    <div className="rounded-md border border-yellow-500/20 bg-gray-950/30 p-3">
+                      <p className="text-sm text-gray-500">Return</p>
+                      <p className="mt-2 text-lg font-semibold text-gray-100">{pct(backtest.result.metrics.returnPct)}</p>
                     </div>
-                    <span className="rounded-md border border-teal-400/30 bg-teal-400/10 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-teal-300">
-                      Custom
-                    </span>
+                    <div className="rounded-md border border-yellow-500/20 bg-gray-950/30 p-3">
+                      <p className="text-sm text-gray-500">Ending Capital</p>
+                      <p className="mt-2 text-lg font-semibold text-gray-100">{currency(backtest.result.metrics.endingCapital)}</p>
+                    </div>
+                    <div className="rounded-md border border-yellow-500/20 bg-gray-950/30 p-3">
+                      <p className="text-sm text-gray-500">Trades</p>
+                      <p className="mt-2 text-lg font-semibold text-gray-100">{backtest.result.metrics.numberOfTrades}</p>
+                    </div>
                   </div>
                 </div>
-              ))}
-              {history && history.strategies.filter((item) => item.prompt).length === 0 && (
-                <div className="rounded-md border border-dashed border-gray-700 bg-gray-900/50 p-4 text-sm text-gray-500">
-                  Your named custom strategies will show up here after you generate and save them.
+              ) : latestSavedBacktest ? (
+                <div className="rounded-md border border-gray-700 bg-gray-900/70 p-5">
+                  <p className="text-sm font-semibold uppercase tracking-wide text-yellow-400">Latest Saved Backtest</p>
+                  <h3 className="mt-2 text-2xl font-semibold text-gray-100">
+                    {latestSavedBacktest.symbol} / {latestSavedBacktest.strategyName}
+                  </h3>
+                  <div className="mt-5 grid gap-3 md:grid-cols-3">
+                    <div>
+                      <p className="text-sm text-gray-500">Return</p>
+                      <p className="mt-2 text-lg font-semibold text-gray-100">{pct(latestSavedBacktest.metrics.returnPct)}</p>
+                    </div>
+                    <div>
+                      <p className="text-sm text-gray-500">P&L</p>
+                      <p className="mt-2 text-lg font-semibold text-gray-100">
+                        {currency(latestSavedBacktest.metrics.totalProfitLoss)}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-sm text-gray-500">Trades</p>
+                      <p className="mt-2 text-lg font-semibold text-gray-100">{latestSavedBacktest.metrics.numberOfTrades}</p>
+                    </div>
+                  </div>
+                </div>
+              ) : latestSavedStrategy ? (
+                <div className="rounded-md border border-teal-400/20 bg-teal-400/5 p-5">
+                  <p className="text-sm font-semibold uppercase tracking-wide text-teal-300">Latest Saved AI Strategy</p>
+                  <h3 className="mt-2 text-2xl font-semibold text-gray-100">{latestSavedStrategy.name}</h3>
+                  <p className="mt-2 text-sm text-gray-400">
+                    {latestSavedStrategy.category} strategy saved {formatDateTime(latestSavedStrategy.updatedAt)}.
+                  </p>
+                </div>
+              ) : (
+                <div className="rounded-md border border-dashed border-gray-700 bg-gray-900/50 p-8 text-center">
+                  <p className="font-semibold text-gray-100">No current work yet</p>
+                  <p className="mt-2 text-sm text-gray-500">Logs are empty until you run real work in the lab.</p>
                 </div>
               )}
             </div>
-            <div className="space-y-3">
-              <p className="text-sm font-semibold uppercase tracking-wide text-yellow-400">Backtests</p>
-              {history?.backtests.slice(0, 6).map((item) => (
-                <div key={item._id} className="rounded-md border border-gray-700 bg-gray-900/70 p-3">
-                  <p className="font-medium text-gray-100">{item.symbol}</p>
-                  <p className="mt-1 text-sm text-gray-400">{item.strategyName}</p>
-                  <p className="mt-2 text-xs text-teal-400">{pct(item.metrics.returnPct)}</p>
-                </div>
-              ))}
-            </div>
-            <div className="space-y-3">
-              <p className="text-sm font-semibold uppercase tracking-wide text-yellow-400">Paper Sessions</p>
-              {history?.paperSessions.slice(0, 6).map((item) => (
-                <button
-                  key={item._id}
-                  type="button"
-                  onClick={() => void loadPaperSessions(item._id)}
-                  className="w-full rounded-md border border-gray-700 bg-gray-900/70 p-3 text-left"
-                >
-                  <p className="font-medium text-gray-100">{item.symbol}</p>
-                  <p className="mt-1 text-sm text-gray-400">{item.strategyName}</p>
-                  <p className="mt-2 text-xs uppercase tracking-wide text-teal-400">{item.status}</p>
-                </button>
-              ))}
-            </div>
-          </div>
+          )}
         </div>
       </section>
     </div>
